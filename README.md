@@ -39,7 +39,7 @@ segura y completamente en español, con un enfoque profesional para entornos de 
 ## Modo de uso
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Invoke-Enum.ps1
+powershell.exe -ep bypass -File .\Invoke-Enum.ps1
 ```
 
 O ejecutar en memoria:
@@ -81,6 +81,3 @@ iex (Get-Content .\Invoke-Enum.ps1 -Raw)
 - Compatible con: Windows 7, 10, 11, Server 2012/2016/2019
 
 ---
-
-## Créditos e inspiración
-Desarrollado por y para la comunidad hispanohablante de seguridad ofensiva.

@@ -60,6 +60,12 @@ Catch {
     Write-Host "[!] Error al obtener información del sistema." -ForegroundColor Red
 }
 
+# ================= INFORMACION DE RED =================
+Show-Section "Información de red extendida"
+
+ipconfig /all | Out-String | Write-Host  -ForegroundColor White
+route print | Out-String | Write-Host  -ForegroundColor White
+
 
 # ================= USUARIOS Y PRIVILEGIOS =================
 Show-Section "Usuarios y Privilegios"
@@ -112,6 +118,124 @@ Try {
         }
     }
 } catch {}
+
+# ================= Servicios con rutas sin comillas =================
+Show-Section "Servicios con rutas sin comillas (Unquoted Service Paths)"
+
+Write-Host "[*] POC: Si la ruta tiene espacios y no está entre comillas, puedes abusar de carpetas intermedias"
+Write-Host "[+] Exploit: Crear ejecutable en ruta parcial y reiniciar el servicio"
+
+$found = $false
+
+Try {
+    Get-WmiObject Win32_Service | ForEach-Object {
+        $svc = $_
+        $rawPath = $svc.PathName
+
+        if ($rawPath -and $rawPath -match ' ' -and $rawPath -notmatch '^".*"$') {
+            $exe = ($rawPath -split ' ')[0]
+            $exeName = Split-Path $exe -Leaf
+
+            if ($exeName -notmatch "svchost.exe|dllhost.exe|taskhostw.exe|conhost.exe" -and `
+                $exe -notmatch "^C:\\Windows") {
+
+                Write-Host ""
+                Write-Host "[!] Servicio vulnerable: $($svc.Name)" -ForegroundColor Red
+                Write-Host "    Binario: $exe" -ForegroundColor Yellow
+                Write-Host "    Sugerencia: Ejecuta 'sc qc $($svc.Name)' para validarlo manualmente" -ForegroundColor DarkGray
+                $found = $true
+            }
+        }
+    }
+
+    if (-not $found) {
+        Write-Host "[*] No se detectaron rutas sin comillas fuera de C:\\Windows." -ForegroundColor Green
+    }
+}
+Catch {
+    Write-Host "[!] Error durante el escaneo de rutas sin comillas." -ForegroundColor DarkGray
+}
+
+
+# ================= Carpetas con permisos WRITE/MODIFY =================
+Show-Section "Carpetas vulnerables con permisos WRITE/MODIFY "
+
+$programDirs = @("C:\", "C:\Program Files", "C:\Program Files (x86)")
+$maxDepth = 3
+
+function Get-SubDirs($path, $depth) {
+    if ($depth -le 0) { return @() }
+    try {
+        $subs = Get-ChildItem -Path $path -Directory -Force -ErrorAction Stop
+        $all = @($path)
+        foreach ($sub in $subs) {
+            $all += Get-SubDirs -path $sub.FullName -depth ($depth - 1)
+        }
+        return $all
+    } catch {
+        return @()
+    }
+}
+
+foreach ($base in $programDirs) {
+    $dirs = Get-SubDirs -path $base -depth $maxDepth
+    foreach ($dir in $dirs) {
+        try {
+            $acl = Safe-ACL $dir
+            if ($acl) {
+                foreach ($entry in $acl.Access) {
+                    if ($entry.IdentityReference -match "Users|Everyone|Authenticated Users" -and `
+                        $entry.FileSystemRights.ToString() -match "Write|Modify|FullControl") {
+                        Write-Host "[!] Carpeta vulnerable: $dir" -ForegroundColor Yellow
+                        break
+                    }
+                }
+            }
+        } catch {}
+    }
+}
+
+
+
+# ================= Servicios con binarios modificables por el usuario =================
+Show-Section "Servicios con binarios modificables por el usuario"
+
+Write-Host "[*] POC: Si puedes modificar el binario que ejecuta un servicio SYSTEM, puedes escalar"
+Write-Host "[+] Exploit: Reemplazar binario y reiniciar servicio"
+
+$found = $false
+
+Try {
+    Get-WmiObject Win32_Service | ForEach-Object {
+        Try {
+            $path = $_.PathName -replace '"',''
+            $bin = ($path -split '\.exe')[0] + ".exe"
+
+            if (Test-Path $bin) {
+                $acl = Safe-ACL $bin
+                if ($acl) {
+                    foreach ($entry in $acl.Access) {
+                        if ($entry.IdentityReference -match "Users|Everyone|Authenticated Users" -and `
+                            $entry.FileSystemRights.ToString() -match "Write|Modify|FullControl") {
+                            Write-Host "`n[!] Servicio vulnerable: $($_.Name)" -ForegroundColor Red
+                            Write-Host "    Binario: $bin" -ForegroundColor Yellow
+                            Write-Host "    Permiso: $($entry.IdentityReference): $($entry.FileSystemRights)" -ForegroundColor Green
+                            $found = $true
+                        }
+                    }
+                }
+            }
+        } Catch {
+            continue
+        }
+    }
+
+    if (-not $found) {
+        Write-Host "[*] No se encontraron servicios vulnerables con binarios modificables." -ForegroundColor Cyan
+    }
+} Catch {
+    Write-Host "[!] Error crítico al analizar servicios modificables." -ForegroundColor DarkGray
+}
 
 
 # ================= Environment PATH - DLL Hijack =================
@@ -447,7 +571,8 @@ Show-Section "Archivos Sensibles en Disco"
 
 $sensitiveExts = @(
     "*.pem", "*.key", "*.pfx", "*.kdbx", "*.sql", "*.bak", "*.db", "*.sqlite",
-    "*.config", "*.ini", "*.keytab", "*.rdp", "*.ovpn", ".aws", ".azureProfile.json"
+    "*.config", "*.ini", "*.keytab", "*.rdp",
+    "*.ovpn", ".aws", ".azureProfile.json"
 )
 
 $searchDirs = @(
@@ -456,8 +581,6 @@ $searchDirs = @(
     "$env:USERPROFILE\Downloads",
     "$env:APPDATA",
     "$env:LOCALAPPDATA",
-    "C:\Program Files",
-    "C:\Program Files (x86)",
     "C:\", "D:\", "E:\"
 )
 
@@ -470,8 +593,7 @@ foreach ($dir in $searchDirs) {
             foreach ($file in $found) {
                 $path = $file.FullName
 
-                # Excluir cualquier ruta que contenga 'Microsoft' o 'Windows' (insensible a mayúsculas)
-                if ($path -match "(?i)Microsoft|Windows") {
+                if ($path -match "Microsoft\\|Windows\\|microsoft\\|windows\\") {
                     continue
                 }
 
@@ -485,3 +607,5 @@ foreach ($dir in $searchDirs) {
         }
     }
 }
+
+

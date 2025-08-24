@@ -21,6 +21,7 @@ segura y completamente en español, con un enfoque profesional para entornos de 
   - Credenciales guardadas en `cmdkey`
   - Archivos `Groups.xml` con `cpassword`
   - Archivos `unattend.xml`, `sysprep.xml`, `autounattend.xml`
+- Servicios inseguros por falta de comillas `Full Control`
 - Detección de configuraciones peligrosas como `AlwaysInstallElevated`
 - Análisis de rutas `PATH` con permisos `Write`, `Modify` o `FullControl`
 - Revisión de claves de ejecución automática (`Run` de HKCU y HKLM)

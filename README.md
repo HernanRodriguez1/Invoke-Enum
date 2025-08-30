@@ -54,28 +54,17 @@ iex (Get-Content .\Invoke-Enum.ps1 -Raw)
 
 ---
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/ed8b017c-2f3c-4c27-94bd-f23b53a0ca45" style="max-width: 1000px; width: 100%; height: auto;" />
-</p>
+<img width="1384" height="865" alt="1" src="https://github.com/user-attachments/assets/03abfa4d-646d-4d9e-bc65-1ef16dc05485" /><br>
 
-<br>
+<img width="1877" height="864" alt="2" src="https://github.com/user-attachments/assets/8d7ac0e5-11c8-48c7-99fb-20bfc7b5a649" /><br>
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/ed38a1c9-9b28-4fa8-82c7-e31f7351dda5" style="max-width: 1000px; width: 100%; height: auto;" />
-</p>
+<img width="1210" height="762" alt="3" src="https://github.com/user-attachments/assets/63c1c7fb-61af-41ba-aa52-4c9d5bfb318d" /><br>
 
-<br>
+<img width="1122" height="852" alt="4" src="https://github.com/user-attachments/assets/d47ce924-1774-406a-b58e-3e82df585219" /><br>
 
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/245a8c51-0135-4c51-966a-4ab62693d25d" style="max-width: 1000px; width: 100%; height: auto;" />
-</p>
+<img width="1145" height="851" alt="5" src="https://github.com/user-attachments/assets/80d7bc27-287c-407b-8776-19ada2720fa9" /><br>
 
-<br>
-
-<p align="center">
-  <img src="https://github.com/user-attachments/assets/8da0050d-50ba-4665-8d40-cef46a6b6a3b" style="max-width: 1000px; width: 100%; height: auto;" />
-</p>
-
+<img width="1030" height="708" alt="6" src="https://github.com/user-attachments/assets/e632fd7f-e477-435e-a134-9828b8aa9438" /><br>
 
 
 ## Requirements

@@ -1,49 +1,52 @@
 
 # Invoke-Enum.ps1
 
-**Enumeración avanzada para escalamiento de privilegios en Windows**
+**Advanced Enumeration for Privilege Escalation in Windows**
 
-## Descripción general
+## Overview
 
-`Invoke-Enum.ps1` es una herramienta avanzada escrita en PowerShell que permite a analistas de ciberseguridad 
-identificar posibles vectores de escalamiento de privilegios en sistemas Windows. El script ofrece una salida estructurada, 
-segura y completamente en español, con un enfoque profesional para entornos de auditoría, red teaming o análisis defensivo.
+`Invoke-Enum.ps1` is an advanced tool written in PowerShell that allows cybersecurity analysts to identify potential privilege escalation vectors on Windows systems. The script provides structured, secure, and fully Spanish-language output, with a professional approach for auditing, red teaming, or defensive analysis environments.
 
 ---
 
-## Características principales
+## Features
 
-- Detección de parches de seguridad instalados
-- Enumeración de privilegios sensibles del usuario actual con `whoami /priv`
--  Detección de tokens privilegiados (`SeImpersonate`, `SeAssignPrimaryToken`, etc.)
-- Extracción de credenciales:
-  - Claves AutoLogon (`DefaultUserName`, `DefaultPassword`)
-  - Credenciales guardadas en `cmdkey`
-  - Archivos `Groups.xml` con `cpassword`
-  - Archivos `unattend.xml`, `sysprep.xml`, `autounattend.xml`
-- Servicios inseguros por falta de comillas `Full Control`
-- Detección de configuraciones peligrosas como `AlwaysInstallElevated`
-- Análisis de rutas `PATH` con permisos `Write`, `Modify` o `FullControl`
-- Revisión de claves de ejecución automática (`Run` de HKCU y HKLM)
-- Detección de tareas programadas externas a Microsoft y sus ejecutables asociados
-- Asociación de puertos abiertos con servicios y procesos
-- Exploración profunda del disco:
-  - Ejecutables `.exe` con `FullControl` para `Users` o `Everyone`
-  - Archivos `.ps1`, `.bat`, `.dll`, `.vbs` con permisos de escritura
-- Detección de servicios y versiones de sus binarios para buscar CVEs
-- Enumeración de aplicaciones instaladas de terceros
-- Recolección de archivos sensibles:
-  - `.pfx`, `.pem`, `.sql`, `.config`, `.bak`, `.rdp`, `.key`, `.ini`, `.kdbx`, `.ovpn`, etc.
-- Verificación y localización de hives `SAM` y `SYSTEM` en disco
+- Detection of installed security patches
+- Enumeration of sensitive privileges of the current user with `whoami /priv`
+- Detection of privileged tokens (`SeImpersonate`, `SeAssignPrimaryToken`, `SeBackupPrivilege`, `SeRestorePrivilege`, `SeTakeOwnershipPrivilege`, `SeDebugPrivilege`, `SeLoadDriverPrivilege`, `SeTcbPrivilege`, `SeManageVolumePrivilege`, `SeCreateTokenPrivilege`)
+- Credential extraction:
+- AutoLogon keys (`DefaultUserName`, `DefaultPassword`)
+- Credentials saved in `cmdkey`
+- `Groups.xml` files with `cpassword`
+- `unattend.xml`, `sysprep.xml` files `autounattend.xml`
+- Unquoted Service Paths (Unquoted Service Paths)
+- Detection of dangerous configurations such as `AlwaysInstallElevated`
+- Analysis of `PATH` paths with `Write`, `Modify`, or `FullControl` permissions
+- Review of automatic execution keys (`Run` from HKCU and HKLM)
+- Detection of scheduled tasks outside of Microsoft and their associated executables
+- Association of open ports with services and processes
+- Deep disk scan:
+- `.exe` executables with `FullControl` for `Users` or `Everyone`
+- `.ps1`, `.bat`, `.dll`, `.vbs` files with write permissions
+- Detection of services and their binary versions to search for CVEs
+- Enumeration of installed third-party applications
+- Collection of sensitive files:
+- `.pfx`, `.pem`, `.sql`, `.config`, `.bak`, `.rdp`, `.key`, `.ini`, `.kdbx`, `.ovpn`, etc.
+- Verification and location of `SAM` and `SYSTEM` hives on disk
+- Analysis of system information (OS, hardware, users, groups)
+- Evaluation of UAC (User Account Control) settings
+- Search for DPAPI credentials in registry and files
+- Scanning of extended network information (IP configuration, routing table)
+- Detection of PowerShell history and sensitive commands
 ---
 
-## Modo de uso
+## How to use
 
 ```powershell
 powershell.exe -ep bypass -File .\Invoke-Enum.ps1
 ```
 
-O ejecutar en memoria:
+Or run in memory:
 
 ```powershell
 iex (Get-Content .\Invoke-Enum.ps1 -Raw)
@@ -75,10 +78,9 @@ iex (Get-Content .\Invoke-Enum.ps1 -Raw)
 
 
 
-## Requisitos
+## Requirements
 
-- PowerShell 5.0 o superior
-- Permisos de usuario estándar (no requiere privilegios administrativos)
-- Compatible con: Windows 7, 10, 11, Server 2012/2016/2019
-
+- PowerShell 5.0 or higher
+- Standard user permissions (no administrative privileges required)
+- Compatible with: Windows 7, 10, 11, Server 2012/2016/2019
 ---
